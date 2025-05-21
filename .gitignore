@@ -1,0 +1,9 @@
+.git/
+build/
+**CmakeCache.txt
+**CmakeFiles/
+**/*.a
+**/*.so
+**.swp
+**.o
+**/*.test
