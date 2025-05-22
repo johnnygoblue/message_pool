@@ -39,7 +39,7 @@ message_pool/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/message_pool.git
+git clone https://github.com/johnnygoblue/message_pool.git
 cd message_pool
 
 # 2. Configure build system (creates 'build' directory)
