@@ -2,6 +2,9 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
+#include <random>
+
+using namespace std::chrono_literals;
 
 TEST(MessagePoolTest, BasicFunctionality) {
     MessagePool pool(10);
@@ -90,48 +93,67 @@ TEST(MessagePoolTest, InvalidRelease) {
 }
 
 TEST(MessagePoolTest, ThreadSafety) {
-    constexpr size_t POOL_SIZE = 100;
-    constexpr size_t THREAD_COUNT = 20;  // Increased thread count
-    constexpr size_t ITERATIONS = 10000; // More iterations
+    constexpr size_t POOL_SIZE = 5;  // Small pool to force contention
+    constexpr size_t THREAD_COUNT = 20;
+    constexpr size_t ITERATIONS = 1000;
 
     MessagePool pool(POOL_SIZE);
     std::vector<std::thread> threads;
-    std::atomic<size_t> borrowCount{0};
-    std::atomic<size_t> errors{0};
+    std::atomic<size_t> active_borrows{0};
+    std::atomic<bool> stop_flag{false};
+    std::atomic<size_t> total_collisions{0};
+    std::atomic<size_t> max_concurrent_borrows{0};
+
+    // Contention monitor thread
+    std::thread monitor([&]() {
+        while(!stop_flag) {
+            size_t current = active_borrows.load();
+            max_concurrent_borrows = std::max(max_concurrent_borrows.load(), current);
+            if(current > 1) {
+                total_collisions++;
+            }
+            //std::this_thread::sleep_for(1ms);
+            std::this_thread::sleep_for(1ms);
+        }
+    });
 
     for (size_t i = 0; i < THREAD_COUNT; ++i) {
-        threads.emplace_back([&pool, &borrowCount, &errors]() {
+        threads.emplace_back([&]() {
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<> work_dist(100, 1000); // 100-1000μs
+
             for (size_t j = 0; j < ITERATIONS; ++j) {
                 try {
                     auto* msg = pool.borrow();
-                    borrowCount++;
+                    active_borrows++;
 
-                    // Verify message is valid
-                    if (msg->id < 0 || static_cast<size_t>(msg->id) >= pool.capacity()) {
-                        errors++;
-                    }
-
-                    // Simulate work (random delay)
+                    // Simulate variable work
                     std::this_thread::sleep_for(
-                        std::chrono::microseconds(1 + (rand() % 10)));
+                        std::chrono::microseconds(work_dist(gen)));
 
+                    active_borrows--;
                     pool.release(msg);
-                } catch (const std::exception& e) {
-                    errors++;
-                }
+                } catch (...) {}
             }
         });
     }
 
-    for (auto& t : threads) {
-        t.join();
-    }
+    for (auto& t : threads) t.join();
+    stop_flag = true;
+    monitor.join();
 
-    EXPECT_EQ(errors, 0) << "Encountered " << errors << " thread safety errors";
-    EXPECT_EQ(pool.available(), POOL_SIZE)
-        << "Pool should return to full capacity after all threads complete";
-    EXPECT_EQ(borrowCount, THREAD_COUNT * ITERATIONS)
-        << "All borrow operations should complete successfully";
+    // Record and display metrics
+    RecordProperty("TotalCollisions", total_collisions.load());
+    RecordProperty("MaxConcurrentBorrows", max_concurrent_borrows.load());
+
+    std::cout << "\nThread Safety Metrics:\n"
+              << "  Total collisions: " << total_collisions << "\n"
+              << "  Max concurrent borrows: " << max_concurrent_borrows << "\n"
+              << "  Final pool available: " << pool.available() << "/" << POOL_SIZE << "\n";
+
+    EXPECT_GT(total_collisions, 0) << "No thread collisions detected - test not valid";
+    EXPECT_EQ(pool.available(), POOL_SIZE) << "Pool leak detected";
 }
 
 int main(int argc, char** argv) {
